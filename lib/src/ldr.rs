@@ -71,7 +71,7 @@ pub(crate) fn map_image_at(file_base: &[u8], mapped_base: &mut [u8]) -> Result<(
 
         let mut section = first_section;
 
-        for i in 0..(*hdr_nt).FileHeader.NumberOfSections as usize {
+        for _ in 0..(*hdr_nt).FileHeader.NumberOfSections as usize {
             let characteristics = (*section).Characteristics;
             let size_of_raw_data = (*section).SizeOfRawData;
             let pointer_to_raw_data = (*section).PointerToRawData;
@@ -174,25 +174,10 @@ pub(crate) fn relocate_image(base_u: *mut c_void, base_k: *mut c_void) -> Result
             return Err(anyhow!("Can not relocate image: Invalid image format"));
         }
 
-        let is64 = (*header).OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+        let base_offset =
+            (base_k as usize).wrapping_sub((*header).OptionalHeader.ImageBase as usize);
 
-        let base_offset = if is64 {
-            (base_k as usize).wrapping_sub((*header).OptionalHeader.ImageBase as usize)
-        } else {
-            (base_k as usize).wrapping_sub(
-                (*(header as *const pe::IMAGE_NT_HEADERS32))
-                    .OptionalHeader
-                    .ImageBase as usize,
-            )
-        };
-
-        let data_dir = if is64 {
-            &(*header).OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
-        } else {
-            &(*(header as *const pe::IMAGE_NT_HEADERS32))
-                .OptionalHeader
-                .DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
-        };
+        let data_dir = &(*header).OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
 
         if base_offset != 0 && data_dir.Size != 0 {
             let mut relocation = (base_u as usize + data_dir.VirtualAddress as usize)
@@ -209,9 +194,6 @@ pub(crate) fn relocate_image(base_u: *mut c_void, base_k: *mut c_void) -> Result
                         + (*reloc_list).offset() as usize)
                         as *mut usize;
 
-                    // relocation code will trigger the rust `integer overflow check` and `misaligned pointer check`
-                    // thus the code will not work in debug mode, disable overflow check(in Cargo.toml, by set overflow-checks = false)
-                    // and using unaligned read/write to `bypass` these runtime checks
                     match (*reloc_list).type_() {
                         pe::IMAGE_REL_BASED_DIR64 => {
                             let val = (target_address as *mut usize).read_unaligned()
@@ -219,33 +201,15 @@ pub(crate) fn relocate_image(base_u: *mut c_void, base_k: *mut c_void) -> Result
                             (target_address as *mut usize).write_unaligned(val);
                         }
                         pe::IMAGE_REL_BASED_HIGHLOW => {
-                            if is64 {
-                                let val = (target_address as *mut usize).read_unaligned()
-                                    + base_offset as usize;
-                                (target_address as *mut usize).write_unaligned(val);
-                            } else {
-                                let val = base_offset as u32
-                                    + (target_address as *mut u32).read_unaligned();
-                                (target_address as *mut u32).write_unaligned(val);
-                            }
+                            let val = (target_address as *mut usize).read_unaligned()
+                                + base_offset as usize;
+                            (target_address as *mut usize).write_unaligned(val);
                         }
                         pe::IMAGE_REL_BASED_HIGH => {
-                            if is64 {
-                                *(target_address) += ((base_offset >> 16) & 0xFFFF) as usize;
-                            } else {
-                                let val = ((base_offset >> 16) & 0xFFFF) as u32
-                                    + (target_address as *const u32).read_unaligned();
-                                (target_address as *mut u32).write_unaligned(val);
-                            }
+                            *(target_address) += ((base_offset >> 16) & 0xFFFF) as usize;
                         }
                         pe::IMAGE_REL_BASED_LOW => {
-                            if is64 {
-                                *(target_address) += (base_offset & 0xFFFF) as usize;
-                            } else {
-                                let val = (base_offset & 0xFFFF) as u32
-                                    + (target_address as *mut u32).read_unaligned();
-                                (target_address as *mut u32).write_unaligned(val);
-                            }
+                            *(target_address) += (base_offset & 0xFFFF) as usize;
                         }
                         _ => {}
                     }
@@ -311,6 +275,17 @@ pub(crate) fn copy_image(old_base: *const c_void, new_base: *mut c_void) {
                 size_of_raw_data as _,
             );
 
+            // Zero out the extra bytes in the left of section data
+            if size_of_raw_data < (*p_section).Misc.VirtualSize {
+                ptr::write_bytes(
+                    new_base
+                        .wrapping_add(virtual_address as _)
+                        .wrapping_add(size_of_raw_data as _),
+                    0,
+                    ((*p_section).Misc.VirtualSize - size_of_raw_data) as _,
+                );
+            }
+
             p_section = p_section.add(1);
         }
     }
@@ -363,16 +338,17 @@ pub(crate) fn get_module_export(
         if current_name == api_name {
             let ordinal = unsafe { *ordinals.add(i as usize) };
             let func_rva = unsafe { *functions.add(ordinal as usize) };
-            let func_va = rva_to_va(base_k, func_rva);
+            let func_va_k = rva_to_va(base_k, func_rva);
+            let func_va_u = rva_to_va(base_u, func_rva);
 
             // Forwarded export check
-            let func_addr = func_va as usize;
+            let func_addr = func_va_u as usize;
             if func_addr >= exp_dir_start && func_addr < exp_dir_end {
                 // Target is a forwarder string, ignored
                 return None;
             }
 
-            return Some(func_va);
+            return Some(func_va_k);
         }
     }
 
@@ -431,7 +407,7 @@ pub(crate) fn fixup_imports(base_u: *mut c_void) -> Result<()> {
 
                 #[cfg(debug_assertions)]
                 println!(
-                    "[+] Import function {:?}({:p}) fixed.",
+                    "[+] Import function: {:?}({:p}) fixed.",
                     func_name, func_addr
                 );
 

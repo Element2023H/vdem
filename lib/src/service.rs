@@ -4,8 +4,7 @@ use std::path::Path;
 use windows::{
     Win32::{
         Foundation::{
-            ERROR_SUCCESS, RtlNtStatusToDosError, STATUS_OBJECT_NAME_COLLISION,
-            WIN32_ERROR,
+            ERROR_SUCCESS, RtlNtStatusToDosError, STATUS_OBJECT_NAME_COLLISION, WIN32_ERROR,
         },
         System::Registry::{
             HKEY, HKEY_LOCAL_MACHINE, REG_DWORD, REG_EXPAND_SZ, RegCreateKeyW, RegDeleteTreeW,
@@ -225,7 +224,7 @@ impl DriverService {
 
 #[test]
 fn test_driver_service() {
-    let ds = DriverService::new("fuck", "E:\\Fuck\\fuck.sys")
+    let ds = DriverService::new("test", "E:\\Fuck\\test.sys")
         .inspect_err(|e| {
             panic!("install driver service failed, err = {}", e.message());
         })

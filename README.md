@@ -44,7 +44,7 @@ exploit.select("BS_LED").unwrap();
 ```
 and then do what you can by using that exploit instance
 
-There are nine examples demonstrate how to use this library located in [examples](https://github.com/lzty/vdem/examples) directory
+There are nine examples demonstrate how to use this library located in [examples](https://github.com/lzty/vdem/tree/master/examples) directory
 
 For other examples: see [here](https://github.com/lzty/CVE-2026-94128) and [here](https://github.com/lzty/CVE-2026-94129)
 
